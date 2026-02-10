@@ -21,8 +21,8 @@
 			"kv_namespaces": [
 				{
 					"binding": "JSON_DATA",
-					"id": "06aed493623c4f3da74003ac7ad85e26",
-					"preview_id": "8b2a23da30bf45f0ba592780a9c0c320"
+					"id": "e37eeec327c54a73a68e1336d1df411d",
+					"preview_id": "e37eeec327c54a73a68e1336d1df411d"
 				}
 			]
 		},
@@ -37,7 +37,7 @@
 			"kv_namespaces": [
 				{
 					"binding": "JSON_DATA",
-					"id": "06aed493623c4f3da74003ac7ad85e26"
+					"id": "e37eeec327c54a73a68e1336d1df411d"
 				}
 			]
 		}
@@ -48,7 +48,7 @@
 	"kv_namespaces": [
 		{
 			"binding": "JSON_DATA",
-			"id": "06aed493623c4f3da74003ac7ad85e26"
+			"id": "e37eeec327c54a73a68e1336d1df411d"
 		}
 	]
 }
