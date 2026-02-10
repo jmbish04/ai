@@ -2,8 +2,6 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { swaggerUI } from "@hono/swagger-ui";
-import { apiReference } from "@scalar/hono-api-reference";
 import { z } from "zod";
 
 /**
@@ -12,9 +10,7 @@ import { z } from "zod";
 interface Env {
   GITHUB_TOKEN: string;
   OPENAI_API_KEY: string;
-  AI_GATEWAY_ID: string; // The ID of your Cloudflare AI Gateway
   JSON_DATA: KVNamespace;
-  AI: any; // AI Gateway Universal Run binding
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -24,61 +20,77 @@ app.use("*", cors());
 
 /**
  * Default Analysis Prompt
+ * Grounded in 2026 Cloudflare Developer Ecosystem patterns
  */
 const DEFAULT_SYSTEM_PROMPT = `You are a Codex Senior Engineer specializing in the Cloudflare Ecosystem. 
-Analyze the provided GitHub repository structure and configuration files to provide a technical breakdown.
+Analyze the provided GitHub repository structure and configuration files to provide a deep technical breakdown.
 
-Focus Areas:
-1. Cloudflare Stack: Identify use of Workers, Pages, and Bindings (D1, KV, R2, Vectorize, AI Gateway).
-2. Infrastructure: Check for wrangler.jsonc/toml patterns, pnpm/Nx monorepo usage, and deployment scripts.
-3. Frontend Architecture: Breakdown integration of Astro, React, Vite (@cloudflare/vite-plugin), and Tailwind CSS.
-4. Tooling & Standards: Evaluate Biome/Oxlint usage, Shadcn UI registry compatibility (Dark Theme), and Zod validation.
-5. Agentic Patterns: Search for Agents SDK, Workflows, Durable Objects, or RPC-based "callable" methods.
+Required Breakdown Areas:
+1. Cloudflare Stack: Identify usage of Workers, Pages, and Bindings (D1, KV, R2, Vectorize, Hyperdrive, AI Gateway).
+2. Infrastructure: Identify patterns in wrangler.jsonc/toml, deployment scripts, and monorepo orchestration (Nx/Turbo).
+3. Frontend Capabilities: Detailed breakdown of Astro, React, Vite (@cloudflare/vite-plugin), Tailwind CSS, and Shadcn UI (Dark Theme).
+4. Standards Check: Verify use of Biome/Oxlint, Zod validation, and mandatory endpoints (/health, /context, /docs).
+5. Agentic Patterns: Search for Agents SDK, Workflows, Durable Objects, or RPC methods.
 
-Standard Recommendation: Check if they include mandatory endpoints (/health, /context, /docs) and standard OpenAPI v3.1.0 specs.`;
+Format the response as a professional architectural review.`;
 
 /**
  * POST /analyze
- * Deep analysis of a GitHub repository for Cloudflare-specific patterns.
+ * Triggers a deep analysis of a public GitHub repository.
  */
 app.post("/analyze", async (c) => {
-  const body = await c.req.json();
-  const { repoUrl, prompt: userPrompt } = z.object({
-    repoUrl: z.string().url(),
-    prompt: z.string().optional()
-  }).parse(body);
+  try {
+    const body = await c.req.json();
+    const { repoUrl, prompt: userPrompt } = z.object({
+      repoUrl: z.string().url(),
+      prompt: z.string().optional()
+    }).parse(body);
 
-  const { owner, repo } = parseGitHubUrl(repoUrl);
-  
-  // 1. Fetch Repository Context
-  const fileTree = await fetchGitHubTree(owner, repo, c.env.GITHUB_TOKEN);
-  const criticalFiles = ["package.json", "wrangler.jsonc", "wrangler.toml", "nx.json", "biome.json", "astro.config.ts", "vite.config.ts"];
-  const fileContents = await fetchCriticalFiles(owner, repo, fileTree, criticalFiles, c.env.GITHUB_TOKEN);
+    const { owner, repo } = parseGitHubUrl(repoUrl);
+    
+    // 1. Fetch Repository Metadata (Recursive Tree)
+    const fileTree = await fetchGitHubTree(owner, repo, c.env.GITHUB_TOKEN);
+    const criticalTargets = [
+      "package.json", 
+      "wrangler.jsonc", 
+      "wrangler.toml", 
+      "nx.json", 
+      "biome.json", 
+      "astro.config.ts", 
+      "vite.config.ts",
+      "AGENTS.md"
+    ];
+    
+    // 2. Extract content from critical configuration files
+    const fileContents = await fetchCriticalFiles(owner, repo, fileTree, criticalTargets, c.env.GITHUB_TOKEN);
 
-  // 2. Setup AI via Cloudflare AI Gateway
-  const openai = createOpenAI({
-    apiKey: c.env.OPENAI_API_KEY,
-    baseURL: `https://gateway.ai.cloudflare.com/v1/${c.env.AI_GATEWAY_ID}/openai`,
-  });
+    // 3. Setup AI Client
+    const openai = createOpenAI({
+      apiKey: c.env.OPENAI_API_KEY,
+    });
+    const model = openai("gpt-4o");
 
-  const model = openai("gpt-4o"); // High-reasoning model for structural analysis
+    // 4. Construct instruction with optional highlight area
+    const instructions = userPrompt 
+      ? `${DEFAULT_SYSTEM_PROMPT}\n\nSPECIAL AREA TO HIGHLIGHT: ${userPrompt}`
+      : DEFAULT_SYSTEM_PROMPT;
 
-  // 3. Generate Analysis
-  const finalPrompt = userPrompt 
-    ? `${DEFAULT_SYSTEM_PROMPT}\n\nSPECIAL FOCUS AREA: ${userPrompt}`
-    : DEFAULT_SYSTEM_PROMPT;
+    // 5. Generate Analysis
+    const { text } = await generateText({
+      model,
+      system: instructions,
+      prompt: `Analyze this repository data:\n\nFile List:\n${JSON.stringify(fileTree, null, 2)}\n\nConfig Files:\n${JSON.stringify(fileContents, null, 2)}`,
+    });
 
-  const { text } = await generateText({
-    model,
-    system: finalPrompt,
-    prompt: `Repository Structure:\n${JSON.stringify(fileTree, null, 2)}\n\nCritical File Contents:\n${JSON.stringify(fileContents, null, 2)}`,
-  });
+    return c.json({ 
+      analysis: text,
+      repo: { owner, repo },
+      filesAnalyzed: Object.keys(fileContents)
+    });
 
-  return c.json({ 
-    analysis: text,
-    repo: { owner, repo },
-    filesAnalyzed: Object.keys(fileContents)
-  });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
 });
 
 /**
@@ -87,43 +99,26 @@ app.post("/analyze", async (c) => {
 app.get("/health", (c) => c.json({ status: "healthy", timestamp: new Date().toISOString() }));
 
 app.get("/context", (c) => c.json({ 
-  stack: "Hono, AI SDK, Cloudflare AI Gateway",
-  purpose: "GitHub Repository Analyzer for Cloudflare standards"
+  stack: "Hono, AI SDK, OpenAI",
+  purpose: "Architectural Learning & AGENTS.md Standardisation"
 }));
 
-app.get("/openapi.json", (c) => {
-  return c.json({
-    openapi: "3.1.0",
-    info: { title: "Repo Scraper API", version: "1.0.0" },
-    paths: {
-      "/analyze": {
-        post: {
-          summary: "Analyze a GitHub repo for CF patterns",
-          requestBody: {
-            content: { "application/json": { schema: { type: "object", properties: { repoUrl: { type: "string" }, prompt: { type: "string" } } } } }
-          },
-          responses: { "200": { description: "Technical breakdown" } }
-        }
-      }
-    }
-  });
-});
-
-app.get("/swagger", swaggerUI({ url: "/openapi.json" }));
-app.get("/scalar", apiReference({ spec: { url: "/openapi.json" } }));
-app.get("/docs", (c) => c.redirect("/scalar"));
-
 /**
- * GitHub Utilities
+ * GitHub API Utilities
  */
 function parseGitHubUrl(url: string) {
-  const parts = url.replace("https://github.com/", "").split("/");
+  const cleanUrl = url.endsWith("/") ? url.slice(0, -1) : url;
+  const parts = cleanUrl.replace("https://github.com/", "").split("/");
   return { owner: parts[0], repo: parts[1] };
 }
 
 async function fetchGitHubTree(owner: string, repo: string, token: string) {
-  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`, {
-    headers: { Authorization: `Bearer ${token}`, "User-Agent": "cf-repo-scraper" }
+  const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`;
+  const response = await fetch(url, {
+    headers: { 
+      Authorization: `Bearer ${token}`, 
+      "User-Agent": "cloudflare-repo-analyzer" 
+    }
   });
   if (!response.ok) return [];
   const data: any = await response.json();
@@ -132,13 +127,17 @@ async function fetchGitHubTree(owner: string, repo: string, token: string) {
 
 async function fetchCriticalFiles(owner: string, repo: string, tree: string[], targets: string[], token: string) {
   const contents: Record<string, string> = {};
-  const foundTargets = tree.filter(path => targets.some(t => path.endsWith(t))).slice(0, 10);
+  // Limit to top 10 most relevant files to manage token context
+  const foundPaths = tree.filter(path => targets.some(t => path.endsWith(t))).slice(0, 10);
 
-  for (const path of foundTargets) {
-    const resp = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/main/${path}`, {
+  for (const path of foundPaths) {
+    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/main/${path}`;
+    const resp = await fetch(rawUrl, {
       headers: { Authorization: `Bearer ${token}` }
     });
-    if (resp.ok) contents[path] = await resp.text();
+    if (resp.ok) {
+      contents[path] = await resp.text();
+    }
   }
   return contents;
 }
