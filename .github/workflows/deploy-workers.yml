@@ -1,0 +1,103 @@
+name: AI Repo CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  # Job 1: Validation (CI)
+  # Ensures code quality across the entire monorepo before deployment.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - name: Restore Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            **/node_modules
+            ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint and Test (Nx)
+        run: |
+          npx nx run-many --target=lint --projects='demos/*'
+          npx nx run-many --target=test --projects='demos/*'
+
+  # Job 2: Deployment (CD)
+  # Deploys the specified workers to Cloudflare using a Matrix Strategy.
+  deploy:
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker:
+          - name: "agent-task-manager-human-in-the-loop"
+            path: "demos/agent-task-manager-human-in-the-loop"
+          - name: "evaluator-optimiser"
+            path: "demos/evaluator-optimiser"
+          - name: "model-scraper"
+            path: "demos/model-scraper"
+          - name: "orchestrator-workers"
+            path: "demos/orchestrator-workers"
+          - name: "parallelisation"
+            path: "demos/parallelisation"
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Worker (Nx)
+        run: npx nx build ${{ matrix.worker.name }}
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ${{ matrix.worker.path }}
+          # wrangler.jsonc or wrangler.toml is automatically detected here
+          command: deploy
